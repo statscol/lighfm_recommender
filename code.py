@@ -1,130 +1,78 @@
 
 import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
-from sklearn import preprocessing
 from lightfm import LightFM
+from sklearn import preprocessing
+from lightfm.data import Dataset
+from lightfm.evaluation import auc_score
 from scipy.sparse import csr_matrix 
 from scipy.sparse import coo_matrix 
-from sklearn.metrics import roc_auc_score
-import time
-from lightfm.evaluation import auc_score
-import pickle
-
-def create_data(datapath,start_date,end_date):
-    df=pd.read_csv(datapath)
-    df=df.assign(date=pd.Series(datetime.fromtimestamp(a/1000).date() for a in df.timestamp))
-    df=df.sort_values(by='date').reset_index(drop=True) # for some reasons RetailRocket did NOT sort data by date
-    df=df[(df.date>=datetime.strptime(start_date,'%Y-%m-%d').date())&(df.date<=datetime.strptime(end_date,'%Y-%m-%d').date())]
-    df=df[['visitorid','itemid','event']]
-    return df
+from sklearn.model_selection import train_test_split
+#from keras.utils.np_utils import to_categorical   
+#from sklearn.preprocessing import OneHotEncoder
 
 
-
-def create_implicit_feedback_matrix(df, split_ratio):
-    # assume df.columns=['visitorid','itemid','event']
-    id_cols=['visitorid','itemid']
-    trans_cat=dict()
-    for k in id_cols:
-        cate_enc=preprocessing.LabelEncoder()
-        trans_cat[k]=cate_enc.fit_transform(df[k].values)
-    cate_enc=preprocessing.LabelEncoder()
-    ratings=cate_enc.fit_transform(df.event) 
-    n_users=len(np.unique(trans_cat['visitorid']))
-    n_items=len(np.unique(trans_cat['itemid']))    
-    split_point=np.int(np.round(df.shape[0]*split_ratio))
+##THIS FUNCTION GENERATES FAKE DATA: USERID, ITEM ID, RATING (1 TO 10)
+def create_data(n):
+    users=np.random.choice(np.arange(n),(n,1))
+    items=np.random.choice(['p1','p2','p4','p12','p13','p41','p10','p60','p42',\
+                            'p11','p21','p456','p342','p513','p941','p130','p160','p942','p342','p5k13','p9v41','p1630','p1630','p94h32','p1b0','p6a0','pt42','pe11','p2x1','pd456','p3de42','p5hg13','p9r41','ps130','p1x60','pb942','pa342','p5ek13','p9vv41','p163d0','p16d30','p943e2'],(n,1))
+    rating=np.random.randint(1,high=10,size=(n,1),dtype='int')
+    return np.column_stack([users,items,rating])
     
-    rate_matrix=dict()
-    rate_matrix['train']=coo_matrix((ratings[0:split_point],(trans_cat['visitorid'][0:split_point],\
-                                              trans_cat['itemid'][0:split_point]))\
-                             ,shape=(n_users,n_items))
-    rate_matrix['test']=coo_matrix((ratings[split_point+1::],(trans_cat['visitorid'][split_point+1::],\
-                                              trans_cat['itemid'][split_point+1::]))\
-                             ,shape=(n_users,n_items))
-    return rate_matrix
+data=create_data(1000)
 
 
-split_ratio=0.8
+users_encod=preprocessing.LabelEncoder()
+users_recod=users_encod.fit_transform(data[:,0])
 
-def create_implicit_feedback_matrix1(df, split_ratio):
-    # assume df.columns=['visitorid','itemid','event']
-    split_point=np.int(np.round(df.shape[0]*split_ratio))
-    df_train=df.iloc[0:split_point]
-    df_test=df.iloc[split_point::]
-    df_test=df_test[(df_test['visitorid'].isin(df_train['visitorid']))&\
-                     (df_test['itemid'].isin(df_train['itemid']))]
-    id_cols=['visitorid','itemid']
-    trans_cat_train=dict()
-    trans_cat_test=dict()
-    for k in id_cols:
-        cate_enc=preprocessing.LabelEncoder()
-        trans_cat_train[k]=cate_enc.fit_transform(df_train[k].values)
-        trans_cat_test[k]=cate_enc.transform(df_test[k].values)
+items_encod=preprocessing.LabelEncoder()
+items_recod=items_encod.fit_transform(data[:,1])
+
+genr_encod=preprocessing.LabelEncoder()
+genr_recod=genr_encod.fit_transform(data[:,3])
+
+age_encod=preprocessing.LabelEncoder()
+age_recod=age_encod.fit_transform(data[:,4])
+
+
+train=np.column_stack((users_recod,items_recod,data[:,2].astype(int)))
+
+####TRAIN SET PARAMS
+
+n_users=np.unique(train[:,0]).shape[0]
+n_items=np.unique(train[:,1]).shape[0]
+
+##second position are ratings, 0 are user ids, 1 are item_ids
+
+user_interact=coo_matrix((train[:,2],(train[:,0],train[:,1])),shape=(n_users,n_items))
+
+
+##TRANING LIGHTFM
+
+model=LightFM(no_components=20,learning_rate=0.1)
+model.fit(interactions=user_interact,epochs=20,verbose=True)
+
+
+###GET PREDICTIONS
+
+def predict_mod(modelfm,user_list,items_list,top=3):
     
-    # --- Encode ratings:
-    cate_enc=preprocessing.LabelEncoder()
-    ratings=dict()
-    ratings['train']=cate_enc.fit_transform(df_train.event)
-    ratings['test'] =cate_enc.transform(df_test.event)
+    rec=[]
+   # username=[]
     
-    n_users=len(np.unique(trans_cat_train['visitorid']))
-    n_items=len(np.unique(trans_cat_train['itemid']))    
-    rate_matrix=dict()
-    rate_matrix['train']=coo_matrix((ratings['train'],(trans_cat_train['visitorid'],\
-                                              trans_cat_train['itemid']))\
-                             ,shape=(n_users,n_items))
-    rate_matrix['test']=coo_matrix((ratings['test'],(trans_cat_test['visitorid'],\
-                                              trans_cat_test['itemid']))\
-                             ,shape=(n_users,n_items))
-    return rate_matrix
+    for i in user_list:
+        score=modelfm.predict([i],item_ids=items_list)
+        #score=modelfm.predict([i],item_ids=items_list,user_features=userfeats)
+        rec.append(items_encod.classes_[np.argsort(-score)[:top]])
 
+    return(rec)
 
-#ratings=preprocessing.LabelEncoder().fit_transform(np.array([2,3,2,2,3]))
-#users=preprocessing.LabelEncoder().fit_transform(np.array([1,2,3,4,2]))
-#items=preprocessing.LabelEncoder().fit_transform(np.array([3,3,4,4,1]))
-
-#train=coo_matrix((ratings,(users,items)),shape=(len(np.unique(users)),len(np.unique(items))))
-
-print(train.toarray().shape)
+predict_mod(model,np.arange(n_users),np.arange(items_encod.classes_.shape[0]))
 
 
 
 
-rating_matrix['train'].tocsr()
 
 
-if __name__=='__main__':
-    start_time = time.time()
-    df=create_data('D:/Archivos/lightfmkernel/events.csv','2015-5-3','2015-5-18')
-    modelLoad=False
-    rating_matrix=create_implicit_feedback_matrix1(df,.8)
-    if(modelLoad):
-        with open('saved_model','rb') as f:
-            saved_model=pickle.load(f)
-            model=saved_model['model']
-    else:
-        model=LightFM(no_components=5,loss='warp')
-        model.fit(rating_matrix['train'],epochs=20,num_threads=4)
-        with open('saved_model','wb') as f:
-            saved_model={'model':model}
-               pickle.dump(saved_model, f)
-    auc_train = auc_score(model, rating_matrix['train']).mean()
-    auc_test = auc_score(model, rating_matrix['test']).mean()
-    
-    #df=df.assign(pred_score=model.predict(df['visitorid'],df['itemid']))
-    
-    #df_auc=df.groupby(by='visitorid').apply(lambda df: roc_auc_score(df['event'].values,df['pred_score'].values))
-    #print('Training auc %0.3f' % numpy.mean([i for i in df_auc.values if i > -1]))
-    
-    print("--- Run time:  %s mins ---\n" % ((time.time() - start_time)/60))
-    print("Train AUC %.3f\n"%auc_train)
-    print("Test AUC %.3f\n"%auc_test)
-    
-    
-    
-    
-    
-    
-    
-    
+
     
