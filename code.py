@@ -49,7 +49,7 @@ user_interact=coo_matrix((train[:,2],(train[:,0],train[:,1])),shape=(n_users,n_i
 
 ##TRANING LIGHTFM
 
-model=LightFM(no_components=20,learning_rate=0.1)
+model=LightFM(no_components=20,learning_rate=0.1,loss='warp')
 model.fit(interactions=user_interact,epochs=20,verbose=True)
 
 
